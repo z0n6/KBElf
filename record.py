@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import json
 import time
 import threading
@@ -19,36 +20,40 @@ class ActionRecorder:
         self.mouse_listener = None
         self.pressed_keys = set()
         self.stop_requested = False
+        self.waiting_for_trigger = False
+        self.trigger_listener = None
         
         # Create output directory if it doesn't exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
     def start_recording(self):
         """Start recording keyboard and mouse actions"""
-        print("Starting recording...")
+        print("Ready to record!")
+        print("Press Ctrl+Shift+R to start recording")
         print("Press Ctrl+Alt+S to stop recording")
-        print("Or press ESC as emergency stop")
-        print("You can now switch to other applications - recording will continue in background")
+        print("Press ESC for emergency stop")
+        print("You can switch to other applications - monitoring continues in background")
         
-        self.recording = True
+        self.recording = False
         self.stop_requested = False
-        self.start_time = time.time()
+        self.start_time = None
         self.actions = []
         self.pressed_keys = set()
+        self.recording_started = False
         
         try:
-            # Create listeners with suppress=False to allow normal operation
+            # Create listeners that handle both trigger and recording
             self.keyboard_listener = keyboard.Listener(
                 on_press=self.on_key_press,
                 on_release=self.on_key_release,
-                suppress=False  # Don't suppress normal key behavior
+                suppress=False
             )
             
             self.mouse_listener = mouse.Listener(
                 on_click=self.on_mouse_click,
                 on_move=self.on_mouse_move,
                 on_scroll=self.on_mouse_scroll,
-                suppress=False  # Don't suppress normal mouse behavior
+                suppress=False
             )
             
             # Start listeners in daemon mode
@@ -57,9 +62,10 @@ class ActionRecorder:
             self.keyboard_listener.start()
             self.mouse_listener.start()
             
-            # Keep recording until stop is requested
-            print("Recording started! Listening for events...")
-            while self.recording and not self.stop_requested:
+            print("🎯 Waiting for Ctrl+Shift+R to start recording...")
+            
+            # Keep monitoring until stop is requested
+            while not self.stop_requested:
                 time.sleep(0.1)
                 # Check if listeners are still running
                 if not (self.keyboard_listener.running or self.mouse_listener.running):
@@ -105,65 +111,79 @@ class ActionRecorder:
     
     def on_key_press(self, key):
         """Handle key press events"""
-        if not self.recording:
-            return
-        
         try:
             # Track pressed keys
             self.pressed_keys.add(key)
             
-            # Check for stop combination: Ctrl+Alt+S
-            ctrl_pressed = any(k in self.pressed_keys for k in [Key.ctrl_l, Key.ctrl_r, Key.ctrl])
-            alt_pressed = any(k in self.pressed_keys for k in [Key.alt_l, Key.alt_r, Key.alt])
-            s_pressed = (hasattr(key, 'char') and key.char and key.char.lower() == 's') or key == Key.esc
+            # Check for start combination: Ctrl+Shift+R
+            if not self.recording:
+                ctrl_pressed = any(k in self.pressed_keys for k in [Key.ctrl_l, Key.ctrl_r, Key.ctrl])
+                shift_pressed = any(k in self.pressed_keys for k in [Key.shift_l, Key.shift_r, Key.shift])
+                r_pressed = (hasattr(key, 'char') and key.char and key.char.lower() == 'r')
+                
+                if ctrl_pressed and shift_pressed and r_pressed:
+                    print("🔴 Recording started! Listening for events...")
+                    self.recording = True
+                    self.start_time = time.time()
+                    self.actions = []
+                    self.recording_started = True
+                    return  # Don't record the trigger combination
             
-            # Also check if 's' was pressed recently
-            if not s_pressed:
-                s_pressed = any(hasattr(k, 'char') and k.char and k.char.lower() == 's' for k in self.pressed_keys)
-            
-            if ctrl_pressed and alt_pressed and s_pressed:
-                print(f"\nStop combination detected! Stopping recording...")
-                self.stop_requested = True
-                return False  # Stop the listener
-            
-            # Alternative: ESC key as emergency stop
-            if key == Key.esc:
-                esc_count = sum(1 for k in self.pressed_keys if k == Key.esc)
-                if esc_count >= 1:  # Single ESC press
+            # Check for stop combination: Ctrl+Alt+S (only when recording)
+            if self.recording:
+                ctrl_pressed = any(k in self.pressed_keys for k in [Key.ctrl_l, Key.ctrl_r, Key.ctrl])
+                alt_pressed = any(k in self.pressed_keys for k in [Key.alt_l, Key.alt_r, Key.alt])
+                s_pressed = (hasattr(key, 'char') and key.char and key.char.lower() == 's')
+                
+                if ctrl_pressed and alt_pressed and s_pressed:
+                    print(f"\nStop combination detected! Stopping recording...")
+                    self.stop_requested = True
+                    return False  # Stop the listener
+                
+                # Alternative: ESC key as emergency stop
+                if key == Key.esc:
                     print(f"\nESC pressed - Stopping recording...")
                     self.stop_requested = True
                     return False
+                
+                # Record the key press (only when actively recording)
+                action = {
+                    "type": "key_press",
+                    "timestamp": round(self.get_timestamp(), 3),
+                    "key": self.format_key(key),
+                    "modifiers": self.get_active_modifiers()
+                }
+                self.actions.append(action)
+                
+                # Show progress every 50 actions
+                if len(self.actions) % 50 == 0 and len(self.actions) > 0:
+                    print(f"📊 Recorded {len(self.actions)} actions so far...")
             
-            # Record the key press
-            action = {
-                "type": "key_press",
-                "timestamp": round(self.get_timestamp(), 3),
-                "key": self.format_key(key),
-                "modifiers": self.get_active_modifiers()
-            }
-            self.actions.append(action)
-            
+            # Handle ESC to cancel when waiting for trigger
+            elif not self.recording and not self.recording_started and key == Key.esc:
+                print("Recording cancelled.")
+                self.stop_requested = True
+                return False
+                
         except Exception as e:
             print(f"Error in key press handler: {e}")
     
     def on_key_release(self, key):
         """Handle key release events"""
-        if not self.recording:
-            return
-        
         try:
             # Remove from pressed keys
             self.pressed_keys.discard(key)
             
-            # Record the key release
-            action = {
-                "type": "key_release",
-                "timestamp": round(self.get_timestamp(), 3),
-                "key": self.format_key(key),
-                "modifiers": self.get_active_modifiers()
-            }
-            self.actions.append(action)
-            
+            # Only record if actively recording
+            if self.recording:
+                action = {
+                    "type": "key_release",
+                    "timestamp": round(self.get_timestamp(), 3),
+                    "key": self.format_key(key),
+                    "modifiers": self.get_active_modifiers()
+                }
+                self.actions.append(action)
+                
         except Exception as e:
             print(f"Error in key release handler: {e}")
     
