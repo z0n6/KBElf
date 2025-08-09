@@ -1,6 +1,7 @@
 import json
 import time
 import threading
+import argparse
 from datetime import datetime
 try:
     import pynput
@@ -242,11 +243,15 @@ def get_int_input(prompt, default=1, min_val=1, max_val=100):
             print("Please enter a valid integer")
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("filepath", help="file path to the json file")
+    args = parser.parse_args()
+
     replayer = ActionReplayer()
     
     # Load the recording
     print("Loading recording...")
-    json_file = "recordings/recording_20250809_163052.json"  # Update this path as needed
+    json_file = args.filepath
     recording_data = replayer.load_recording(json_file)
     
     if not recording_data:
